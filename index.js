@@ -5,6 +5,7 @@ const dotenv = require("dotenv");
 const WebSocket = require("ws");
 const http = require("http");
 const os = require("os"); // Add this to get network interfaces
+require("./tests/test.js");
 
 // Load environment variables
 dotenv.config();
@@ -69,6 +70,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log("Database connection successful");
+  console.log("HOT RELOAD TEST: " + new Date().toISOString());
 
   // Display IP addresses
   const ipAddresses = getLocalIpAddresses();
