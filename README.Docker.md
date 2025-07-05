@@ -25,7 +25,7 @@
 
 4. Start the application: docker compose up --build
 
-Your application will be available at http://localhost:3000.
+Your application will be available at http://localhost:3003.
 
 ### API Endpoints
 
@@ -40,8 +40,8 @@ To connect your Flutter app to this backend:
 
 ```dart
 // In your api_service.dart
-static const String baseUrl = 'http://localhost:3000/api';
+static const String baseUrl = 'http://localhost:3003/api';
 
 // For Android emulators, use:
-// static const String baseUrl = 'http://10.0.2.2:3000/api';
+// static const String baseUrl = 'http://10.0.2.2:3003/api';
 ```
