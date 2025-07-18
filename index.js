@@ -6,7 +6,7 @@ const WebSocket = require("ws");
 const http = require("http");
 const os = require("os");
 const jwt = require("jsonwebtoken");
-require("./tests/test.js");
+const { Server } = require("socket.io"); // Add Socket.IO
 
 // Load environment variables
 dotenv.config();
@@ -26,28 +26,205 @@ const db = require("./config/database");
 // Routes
 app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/todos", require("./routes/todo.routes"));
-app.use("/api/messages", require("./routes/message.routes")); // Add message routes
+app.use("/api/messages", require("./routes/message.routes"));
 
 // Basic route
 app.get("/", (req, res) => {
-  res.json({ message: "Welcome to the Todo API" });
+  res.json({ message: "Welcome to the Todo API with Socket.IO" });
 });
 
-// Set up WebSocket server with authentication
-const wss = new WebSocket.Server({ server });
+// ========== SOCKET.IO SETUP ==========
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Allow all origins for testing
+    methods: ["GET", "POST"],
+  },
+  transports: ["polling", "websocket"], // Allow both transports
+  allowEIO3: true, // Support older Socket.IO clients
+});
 
-// Store WebSocket connections with user info
+// Store Socket.IO connections with user info
+const socketUsers = new Map(); // socketId -> userInfo
+const userSockets = new Map(); // userId -> socketId
+
+// Socket.IO authentication middleware
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth.token;
+
+    if (!token) {
+      console.log("❌ Socket.IO: No token provided");
+      return next(new Error("Authentication error: No token provided"));
+    }
+
+    // Verify JWT token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const [users] = await db.query(
+      "SELECT id, name, email FROM users WHERE id = ?",
+      [decoded.id]
+    );
+
+    if (users.length === 0) {
+      console.log("❌ Socket.IO: User not found");
+      return next(new Error("Authentication error: User not found"));
+    }
+
+    // Attach user info to socket
+    socket.userId = users[0].id;
+    socket.userInfo = users[0];
+
+    console.log(`✅ Socket.IO: User ${users[0].name} authenticated`);
+    next();
+  } catch (error) {
+    console.log("❌ Socket.IO authentication error:", error.message);
+    next(new Error("Authentication error: Invalid token"));
+  }
+});
+
+// Socket.IO connection handling
+io.on("connection", (socket) => {
+  console.log(
+    `🔌 Socket.IO: User ${socket.userInfo.name} connected (${socket.id})`
+  );
+
+  // Store user connection
+  socketUsers.set(socket.id, socket.userInfo);
+  userSockets.set(socket.userId, socket.id);
+
+  // Send authentication confirmation
+  socket.emit("authenticated", {
+    user: socket.userInfo,
+    socketId: socket.id,
+  });
+
+  // Handle test messages
+  socket.on("test", (data) => {
+    console.log("🧪 Socket.IO test message:", data);
+    socket.emit("testResponse", {
+      message: "Test received!",
+      originalData: data,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  socket.on("testMessage", (data) => {
+    console.log("🧪 Socket.IO test message (auth mode):", data);
+    socket.emit("testResponse", {
+      message: "Authenticated test received!",
+      originalData: data,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // Handle conversation joining
+  socket.on("joinConversation", (conversationId) => {
+    socket.conversationId = conversationId;
+    socket.join(`conversation_${conversationId}`);
+    console.log(
+      `🏠 User ${socket.userId} joined conversation ${conversationId}`
+    );
+
+    socket.emit("joinedConversation", {
+      conversationId: conversationId,
+      message: "Successfully joined conversation",
+    });
+  });
+
+  // Handle leaving conversation
+  socket.on("leaveConversation", () => {
+    if (socket.conversationId) {
+      socket.leave(`conversation_${socket.conversationId}`);
+      console.log(
+        `🚪 User ${socket.userId} left conversation ${socket.conversationId}`
+      );
+      socket.conversationId = null;
+    }
+  });
+
+  // Handle message sending
+  socket.on("sendMessage", async (data) => {
+    try {
+      const {
+        conversationId,
+        content,
+        messageType = "text",
+        temporaryId,
+      } = data;
+
+      console.log(
+        `📤 Socket.IO: User ${socket.userId} sending message to conversation ${conversationId}`
+      );
+
+      // Here you would typically save to database and broadcast
+      // For now, just broadcast to conversation room
+      socket.to(`conversation_${conversationId}`).emit("newMessage", {
+        id: Date.now(), // temporary ID
+        conversationId: conversationId,
+        senderId: socket.userId,
+        senderName: socket.userInfo.name,
+        content: content,
+        messageType: messageType,
+        createdAt: new Date().toISOString(),
+        temporaryId: temporaryId,
+      });
+
+      // Send confirmation to sender
+      socket.emit("messageStatus", {
+        temporaryId: temporaryId,
+        status: "sent",
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.log("❌ Socket.IO message error:", error);
+      socket.emit("error", { message: "Failed to send message" });
+    }
+  });
+
+  // Handle typing indicators
+  socket.on("startTyping", (conversationId) => {
+    socket.to(`conversation_${conversationId}`).emit("userTyping", {
+      userId: socket.userId,
+      userName: socket.userInfo.name,
+      conversationId: conversationId,
+    });
+  });
+
+  socket.on("stopTyping", (conversationId) => {
+    socket.to(`conversation_${conversationId}`).emit("userStoppedTyping", {
+      userId: socket.userId,
+      conversationId: conversationId,
+    });
+  });
+
+  // Handle disconnection
+  socket.on("disconnect", (reason) => {
+    console.log(
+      `🔌 Socket.IO: User ${socket.userInfo.name} disconnected (${reason})`
+    );
+
+    // Clean up stored connections
+    socketUsers.delete(socket.id);
+    userSockets.delete(socket.userId);
+  });
+
+  // Handle errors
+  socket.on("error", (error) => {
+    console.log("❌ Socket.IO error:", error);
+  });
+});
+
+// ========== EXISTING WEBSOCKET SETUP ==========
+const wss = new WebSocket.Server({ server });
 const connectedUsers = new Map();
 
 wss.on("connection", (ws, req) => {
-  console.log("Client attempting to connect");
+  console.log("WebSocket: Client attempting to connect");
 
   ws.on("message", async (message) => {
     try {
       const data = JSON.parse(message);
 
       if (data.type === "authenticate") {
-        // Authenticate user via token
         const token = data.token;
         if (!token) {
           ws.send(
@@ -72,7 +249,6 @@ wss.on("connection", (ws, req) => {
             return;
           }
 
-          // Store user info with WebSocket connection
           ws.userId = users[0].id;
           ws.userInfo = users[0];
           connectedUsers.set(users[0].id, ws);
@@ -84,38 +260,30 @@ wss.on("connection", (ws, req) => {
             })
           );
 
-          console.log(`User ${users[0].name} connected via WebSocket`);
+          console.log(`WebSocket: User ${users[0].name} connected`);
         } catch (error) {
           ws.send(JSON.stringify({ type: "error", message: "Invalid token" }));
           ws.close();
         }
       } else if (data.type === "join_conversation") {
-        // Join a specific conversation room
         if (ws.userId) {
           ws.conversationId = data.conversationId;
           console.log(
-            `User ${ws.userId} joined conversation ${data.conversationId}`
-          );
-
-          // 🔥 ADD THIS DEBUG LOG
-          console.log(
-            `🏠 Client ${ws.userId} now tracking conversation: ${ws.conversationId}`
+            `WebSocket: User ${ws.userId} joined conversation ${data.conversationId}`
           );
         }
       } else if (data.type === "leave_conversation") {
-        // Leave conversation room
         if (ws.userId) {
           console.log(
-            `User ${ws.userId} left conversation ${ws.conversationId}`
+            `WebSocket: User ${ws.userId} left conversation ${ws.conversationId}`
           );
           ws.conversationId = null;
         }
       } else if (data.type === "typing_start") {
-        // Handle typing indicators
         if (ws.userId && ws.conversationId) {
           wss.clients.forEach((client) => {
             if (
-              client.readyState === 1 && // WebSocket.OPEN = 1
+              client.readyState === 1 &&
               client.conversationId === ws.conversationId &&
               client.userId !== ws.userId
             ) {
@@ -131,11 +299,10 @@ wss.on("connection", (ws, req) => {
           });
         }
       } else if (data.type === "typing_stop") {
-        // Handle stop typing
         if (ws.userId && ws.conversationId) {
           wss.clients.forEach((client) => {
             if (
-              client.readyState === 1 && // WebSocket.OPEN = 1
+              client.readyState === 1 &&
               client.conversationId === ws.conversationId &&
               client.userId !== ws.userId
             ) {
@@ -161,7 +328,7 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => {
     if (ws.userId) {
       connectedUsers.delete(ws.userId);
-      console.log(`User ${ws.userId} disconnected`);
+      console.log(`WebSocket: User ${ws.userId} disconnected`);
     }
   });
 
@@ -170,10 +337,11 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-// Make WebSocket server available to routes
+// Make both WebSocket and Socket.IO available to routes
 app.set("wss", wss);
+app.set("io", io);
 
-// Enhanced network detection for Docker (keeping existing code)
+// Enhanced network detection for Docker
 const getDockerNetworkInfo = () => {
   const interfaces = os.networkInterfaces();
   const containerIP = [];
@@ -209,88 +377,20 @@ const getDockerNetworkInfo = () => {
   };
 };
 
-const getCommonHostIPs = () => {
-  return [
-    "192.168.1.x",
-    "192.168.0.x",
-    "192.168.100.x",
-    "10.0.0.x",
-    "172.16.x.x",
-  ];
-};
-
 // Start server
 const PORT = process.env.PORT || 3003;
 server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log("Database connection is a success");
-  console.log("WebSocket server is ready for messaging");
+  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log("📦 Database connection is a success");
+  console.log("🔌 WebSocket server is ready for messaging");
+  console.log("⚡ Socket.IO server is ready for real-time communication");
   console.log("HOT RELOAD TEST: " + new Date().toISOString());
 
   const { containerIP, hostGatewayIP, isDocker } = getDockerNetworkInfo();
 
   console.log("\n" + "=".repeat(70));
-
-  if (isDocker) {
-    console.log("🐳 RUNNING IN DOCKER CONTAINER");
-    console.log(`Container Internal IP: ${containerIP} (internal only)`);
-
-    console.log("\n📱 FOR FLUTTER ON PHYSICAL DEVICE:");
-    console.log(
-      "   ❌ Don't use: localhost:3003 (won't work on physical device)"
-    );
-    console.log(`   ❌ Don't use: ${containerIP}:3003 (internal Docker IP)`);
-
-    if (hostGatewayIP) {
-      console.log(
-        `   ⚠️  Try: http://${hostGatewayIP}:${PORT}/api (Docker gateway)`
-      );
-    }
-
-    console.log("\n   ✅ BEST APPROACH - Use your machine's actual IP:");
-    console.log("   1. Find your machine's IP:");
-    console.log("      • Windows: ipconfig | findstr IPv4");
-    console.log("      • Mac: ifconfig | grep inet");
-    console.log("      • Linux: ip addr show");
-    console.log("\n   2. Look for IPs in these ranges:");
-    getCommonHostIPs().forEach((range) => {
-      console.log(`      • ${range} (replace x with actual numbers)`);
-    });
-
-    console.log("\n   3. Current example that works:");
-    console.log("      • http://192.168.100.87:3003/api ✅");
-    console.log("      • ws://192.168.100.87:3003 ✅ (WebSocket)");
-
-    console.log("\n🌐 TEAM SETUP:");
-    console.log("   Each team member should:");
-    console.log("   1. Run 'ipconfig' (Windows) or 'ifconfig' (Mac/Linux)");
-    console.log("   2. Find their machine's IP (usually 192.168.x.x)");
-    console.log("   3. Use: http://[THEIR_IP]:3003/api");
-    console.log("   4. WebSocket: ws://[THEIR_IP]:3003");
-
-    console.log("\n💡 WHY THIS HAPPENS:");
-    console.log("   • Flutter on physical device ≠ Docker container network");
-    console.log("   • Device needs to reach your computer via network IP");
-    console.log("   • localhost/127.0.0.1 = the device itself (not your PC)");
-  } else {
-    console.log("💻 RUNNING LOCALLY (not in Docker)");
-    console.log("Available on:");
-    if (containerIP !== "unknown") {
-      console.log(`   http://${containerIP}:${PORT}`);
-      console.log(`   http://localhost:${PORT}`);
-      console.log(`   ws://${containerIP}:${PORT}`);
-      console.log(`   ws://localhost:${PORT}`);
-    }
-  }
-
-  console.log("\n📋 FOR YOUR FLUTTER constants.dart:");
-  console.log("   // Each team member uses their own machine IP");
-  console.log(
-    `   const String baseUrl = 'http://[YOUR_MACHINE_IP]:${PORT}/api';`
-  );
-  console.log(`   const String wsUrl = 'ws://[YOUR_MACHINE_IP]:${PORT}';`);
-  console.log("   // Example: 'http://192.168.100.87:3003/api'");
-  console.log("   // Example: 'ws://192.168.100.87:3003'");
-
+  console.log("📱 FOR FLUTTER SOCKET.IO CONNECTION:");
+  console.log(`   ✅ Socket.IO URL: http://192.168.100.87:${PORT}`);
+  console.log(`   ✅ WebSocket URL: ws://192.168.100.87:${PORT}`);
   console.log("=".repeat(70) + "\n");
 });
