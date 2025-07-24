@@ -15,7 +15,7 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-// ========== DEBUG MIDDLEWARE (MOVED TO TOP) ==========
+// ========== DEBUG MIDDLEWARE ==========
 app.use((req, res, next) => {
   console.log(`📍 ${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
@@ -34,12 +34,12 @@ app.get("/", (req, res) => {
   res.json({ message: "Welcome to the Todo API with Socket.IO + WebSocket" });
 });
 
-// Add a TEST ENDPOINT to verify Socket.IO is running (MOVED UP)
+// Test endpoint to verify Socket.IO is running
 app.get("/socket-test", (req, res) => {
   res.json({
     message: "Socket.IO server is running",
     connectedClients: io ? io.engine.clientsCount : 0,
-    transport: "polling,websocket",
+    transport: "websocket",
     timestamp: new Date().toISOString(),
   });
 });
@@ -55,92 +55,126 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"],
   },
-  transports: ["polling", "websocket"],
-  allowEIO3: true,
+  // 🔥 CRITICAL: Flutter compatibility configuration
+  transports: ["websocket"], // ONLY websocket for Flutter
+  allowEIO3: false, // Use latest engine.io version
 
-  // 🔥 FIXED: Much more aggressive timeouts for development
-  pingTimeout: 20000, // Reduced from 60000 to 20000
-  pingInterval: 5000, // Reduced from 25000 to 5000
-
-  // 🔥 NEW: Additional timeouts for better debugging
-  upgradeTimeout: 10000, // Time to wait for upgrade to websocket
+  // 🔥 FIXED: Optimized timeouts for mobile
+  pingTimeout: 60000, // 60 seconds
+  pingInterval: 25000, // 25 seconds
+  upgradeTimeout: 30000, // 30 seconds for upgrade
   maxHttpBufferSize: 1e6, // 1MB max buffer
+  connectTimeout: 45000, // 45 seconds for connection
 
-  // 🔥 NEW: Connection state timeout
-  connectTimeout: 10000, // 10 seconds for connection
+  // 🔥 NEW: Additional options for stability
+  serveClient: false, // Don't serve Socket.IO client
+  destroyUpgrade: false, // Don't destroy upgrade requests
+  destroyUpgradeTimeout: 1000, // Timeout for destroying upgrade
 });
 
 // Store Socket.IO connections with user info
 const socketUsers = new Map();
 const userSockets = new Map();
 
-// DEBUG: Log all Socket.IO connection attempts
+// ========== ENHANCED DEBUGGING ==========
 io.engine.on("connection_error", (err) => {
-  console.log("❌ Socket.IO Engine Error:", err.req);
-  console.log("❌ Socket.IO Engine Error Code:", err.code);
-  console.log("❌ Socket.IO Engine Error Message:", err.message);
-  console.log("❌ Socket.IO Engine Error Context:", err.context);
+  console.log("❌ Socket.IO Engine Connection Error:");
+  console.log("   Request URL:", err.req ? err.req.url : "Unknown");
+  console.log("   Request Headers:", err.req ? err.req.headers : "Unknown");
+  console.log("   Error Code:", err.code);
+  console.log("   Error Message:", err.message);
+  console.log("   Error Context:", err.context);
 });
 
-// DEBUG: Log initial connection attempts (before auth)
-io.engine.on("initial_headers", (headers, req) => {
-  console.log("🔍 Socket.IO Initial Headers:", headers);
-});
-
-io.engine.on("headers", (headers, req) => {
-  console.log("🔍 Socket.IO Headers:", headers);
-});
-
-// IMPORTANT: Log when clients connect to engine (before auth)
+// Log engine connections with more detail
 io.engine.on("connection", (socket) => {
   console.log("🔌 Socket.IO Engine: New client connected:", socket.id);
+  console.log("   Transport:", socket.transport.name);
+  console.log("   Remote address:", socket.remoteAddress);
+  console.log("   Request URL:", socket.request.url);
+  console.log("   User-Agent:", socket.request.headers["user-agent"]);
+
+  // 🔥 NEW: Log when client disconnects from engine
+  socket.on("close", (reason) => {
+    console.log(`🔌 Engine client ${socket.id} disconnected:`, reason);
+  });
+
+  socket.on("error", (error) => {
+    console.log(`❌ Engine client ${socket.id} error:`, error);
+  });
 });
 
-// Socket.IO authentication middleware
+// 🔥 CRITICAL: Enhanced authentication middleware with detailed logging
 io.use(async (socket, next) => {
-  console.log("🔐 Socket.IO Auth Middleware Called");
+  console.log("🔐 Socket.IO Auth Middleware Called for:", socket.id);
+  console.log("   Handshake query:", socket.handshake.query);
+  console.log("   Handshake auth:", socket.handshake.auth);
+  console.log(
+    "   Handshake headers:",
+    Object.keys(socket.handshake.headers || {})
+  );
+
   try {
-    const token = socket.handshake.auth.token;
-    console.log("🔑 Received token:", token ? "YES" : "NO");
+    // 🔥 NEW: Check multiple sources for token
+    const token =
+      socket.handshake.auth.token ||
+      socket.handshake.query.token ||
+      socket.handshake.headers.authorization;
+
+    console.log(
+      "🔑 Token received:",
+      token ? `YES (${token.substring(0, 20)}...)` : "NO"
+    );
 
     if (!token) {
-      console.log("❌ Socket.IO: No token provided");
+      console.log("❌ Socket.IO: No token provided in auth, query, or headers");
       return next(new Error("Authentication error: No token provided"));
     }
 
+    console.log("🔍 Verifying JWT token...");
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log("✅ JWT verified for user ID:", decoded.id);
+
+    console.log("🔍 Querying database for user...");
     const [users] = await db.query(
       "SELECT id, name, email FROM users WHERE id = ?",
       [decoded.id]
     );
 
     if (users.length === 0) {
-      console.log("❌ Socket.IO: User not found");
+      console.log("❌ Socket.IO: User not found in database");
       return next(new Error("Authentication error: User not found"));
     }
 
     socket.userId = users[0].id;
     socket.userInfo = users[0];
 
-    console.log(`✅ Socket.IO: User ${users[0].name} authenticated`);
+    console.log(
+      `✅ Socket.IO: User ${users[0].name} (ID: ${users[0].id}) authenticated successfully`
+    );
+    console.log("🎯 Authentication middleware completed successfully");
     next();
   } catch (error) {
     console.log("❌ Socket.IO authentication error:", error.message);
-    next(new Error("Authentication error: Invalid token"));
+    console.log("   Error type:", error.name);
+    console.log("   Error stack:", error.stack);
+    next(new Error(`Authentication error: ${error.message}`));
   }
 });
 
 // ========== TEST NAMESPACE (NO AUTH REQUIRED) ==========
 const testNamespace = io.of("/test");
 
-// NO authentication middleware for test namespace
 testNamespace.on("connection", (socket) => {
   console.log(`🧪 TEST namespace: Client connected (${socket.id})`);
+  console.log(`   Transport: ${socket.conn.transport.name}`);
 
   // Send immediate confirmation
   socket.emit("connected", {
     message: "Test connection successful!",
     socketId: socket.id,
+    transport: socket.conn.transport.name,
+    namespace: "/test",
     timestamp: new Date().toISOString(),
   });
 
@@ -150,6 +184,8 @@ testNamespace.on("connection", (socket) => {
     socket.emit("testResponse", {
       message: "Test received in test namespace!",
       originalData: data,
+      socketId: socket.id,
+      transport: socket.conn.transport.name,
       timestamp: new Date().toISOString(),
     });
   });
@@ -165,35 +201,47 @@ testNamespace.on("connection", (socket) => {
 
 console.log("🧪 Test namespace created at /test (no auth required)");
 
-// Socket.IO connection handling
+// ========== MAIN NAMESPACE (REQUIRES AUTH) ==========
 io.on("connection", (socket) => {
-  console.log(
-    `🔌 Socket.IO: User ${socket.userInfo.name} connected (${socket.id})`
-  );
+  console.log("🎉 Socket.IO MAIN: Authentication successful!");
+  console.log(`   User: ${socket.userInfo.name} (ID: ${socket.userId})`);
+  console.log(`   Socket ID: ${socket.id}`);
+  console.log(`   Transport: ${socket.conn.transport.name}`);
 
   socketUsers.set(socket.id, socket.userInfo);
   userSockets.set(socket.userId, socket.id);
 
+  // 🔥 IMPORTANT: Send authentication confirmation immediately
   socket.emit("authenticated", {
     user: socket.userInfo,
     socketId: socket.id,
+    transport: socket.conn.transport.name,
+    namespace: "/",
+    timestamp: new Date().toISOString(),
+    message: "Successfully authenticated to main namespace",
   });
 
-  // Handle test messages
+  console.log(`✅ Authentication confirmation sent to ${socket.userInfo.name}`);
+
+  // Handle test messages in authenticated mode
   socket.on("test", (data) => {
-    console.log("🧪 Socket.IO test message:", data);
+    console.log("🧪 Socket.IO authenticated test message:", data);
     socket.emit("testResponse", {
-      message: "Test received!",
+      message: "Authenticated test received!",
       originalData: data,
+      user: socket.userInfo.name,
+      socketId: socket.id,
       timestamp: new Date().toISOString(),
     });
   });
 
   socket.on("testMessage", (data) => {
-    console.log("🧪 Socket.IO test message (auth mode):", data);
+    console.log("🧪 Socket.IO testMessage (auth mode):", data);
     socket.emit("testResponse", {
-      message: "Authenticated test received!",
+      message: "Authenticated testMessage received!",
       originalData: data,
+      user: socket.userInfo.name,
+      socketId: socket.id,
       timestamp: new Date().toISOString(),
     });
   });
@@ -209,6 +257,7 @@ io.on("connection", (socket) => {
     socket.emit("joinedConversation", {
       conversationId: conversationId,
       message: "Successfully joined conversation",
+      timestamp: new Date().toISOString(),
     });
   });
 
@@ -277,18 +326,18 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", (reason) => {
     console.log(
-      `🔌 Socket.IO: User ${socket.userInfo.name} disconnected (${reason})`
+      `🔌 Socket.IO MAIN: User ${socket.userInfo.name} disconnected (${reason})`
     );
     socketUsers.delete(socket.id);
     userSockets.delete(socket.userId);
   });
 
   socket.on("error", (error) => {
-    console.log("❌ Socket.IO error:", error);
+    console.log("❌ Socket.IO MAIN error:", error);
   });
 });
 
-// ========== WEBSOCKET SETUP ==========
+// ========== WEBSOCKET SETUP (UNCHANGED) ==========
 const wss = new WebSocket.Server({
   server,
   path: "/ws",
@@ -462,14 +511,22 @@ server.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log("📦 Database connection is a success");
   console.log("🔌 WebSocket server is ready at ws://192.168.100.87:3003/ws");
-  console.log("⚡ Socket.IO server is ready at http://192.168.100.87:3003");
+  console.log(
+    "⚡ Socket.IO server is ready at http://192.168.100.87:3003 (WebSocket only)"
+  );
+  console.log("🧪 Socket.IO test namespace: http://192.168.100.87:3003/test");
   console.log("HOT RELOAD TEST: " + new Date().toISOString());
 
   const { containerIP, hostGatewayIP, isDocker } = getDockerNetworkInfo();
 
   console.log("\n" + "=".repeat(80));
-  console.log("📱 FOR FLUTTER DUAL CONNECTION:");
-  console.log(`   🟦 Socket.IO URL: http://192.168.100.87:${PORT}`);
-  console.log(`   🟩 WebSocket URL: ws://192.168.100.87:${PORT}/ws`);
+  console.log("📱 FOR FLUTTER SOCKET.IO CONNECTION:");
+  console.log(
+    `   🟦 Main namespace: http://192.168.100.87:${PORT} (requires auth)`
+  );
+  console.log(
+    `   🧪 Test namespace: http://192.168.100.87:${PORT}/test (no auth)`
+  );
+  console.log(`   🟩 WebSocket: ws://192.168.100.87:${PORT}/ws`);
   console.log("=".repeat(80) + "\n");
 });
