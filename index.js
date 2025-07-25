@@ -49,29 +49,104 @@ app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/todos", require("./routes/todo.routes"));
 app.use("/api/messages", require("./routes/message.routes"));
 
-// ========== SOCKET.IO SETUP ==========
+// ========== SOCKET.IO DEBUG MIDDLEWARE ==========
+app.use("/socket.io/", (req, res, next) => {
+  console.log("🔍 Socket.IO request intercepted:");
+  console.log("   Method:", req.method);
+  console.log("   URL:", req.url);
+  console.log("   Headers:", Object.keys(req.headers));
+  console.log("   User-Agent:", req.headers["user-agent"]);
+  console.log("   Origin:", req.headers.origin);
+  next();
+});
+
+// Log all requests to see if Flutter is even reaching the server
+app.use((req, res, next) => {
+  if (req.url.includes("socket.io")) {
+    console.log(`🌐 Socket.IO related request: ${req.method} ${req.url}`);
+    console.log("   Query params:", req.query);
+    console.log("   Transport:", req.query.transport);
+  }
+  next();
+});
+
+// ========== SOCKET.IO SETUP (FLUTTER MOBILE COMPATIBLE) ==========
 const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
   },
-  // 🔥 CRITICAL: Flutter compatibility configuration
-  transports: ["websocket"], // ONLY websocket for Flutter
-  allowEIO3: false, // Use latest engine.io version
 
-  // 🔥 FIXED: Optimized timeouts for mobile
-  pingTimeout: 60000, // 60 seconds
+  // 🔥 CRITICAL: Support both transports but prioritize WebSocket
+  transports: ["websocket", "polling"], // ✅ WebSocket first for Flutter
+
+  allowEIO3: false,
+
+  // 🔥 MOBILE-OPTIMIZED: Aggressive timeouts for mobile networks
+  pingTimeout: 120000, // 2 minutes - longer for mobile
   pingInterval: 25000, // 25 seconds
-  upgradeTimeout: 30000, // 30 seconds for upgrade
-  maxHttpBufferSize: 1e6, // 1MB max buffer
-  connectTimeout: 45000, // 45 seconds for connection
+  upgradeTimeout: 45000, // 45 seconds for mobile upgrade
+  maxHttpBufferSize: 1e6,
+  connectTimeout: 60000, // 1 minute connection timeout
 
-  // 🔥 NEW: Additional options for stability
-  serveClient: false, // Don't serve Socket.IO client
-  destroyUpgrade: false, // Don't destroy upgrade requests
-  destroyUpgradeTimeout: 1000, // Timeout for destroying upgrade
+  // 🔥 FLUTTER COMPATIBILITY: Critical options
+  serveClient: false,
+  destroyUpgrade: false,
+  destroyUpgradeTimeout: 1000,
+  allowUpgrades: true,
+  perMessageDeflate: false, // Disable compression for mobile
+
+  // 🔥 NEW: Additional WebSocket-specific options
+  httpCompression: false, // Disable HTTP compression
+  allowRequest: (req, callback) => {
+    // Log all connection attempts for debugging
+    console.log("🔍 Connection attempt from:", req.headers["user-agent"]);
+    console.log("   Origin:", req.headers.origin);
+    console.log("   Host:", req.headers.host);
+    console.log("   Connection:", req.headers.connection);
+    console.log("   Upgrade:", req.headers.upgrade);
+
+    // Allow all connections for now
+    callback(null, true);
+  },
 });
 
+// 🔥 ENHANCED: WebSocket-specific debugging
+io.engine.on("connection", (socket) => {
+  console.log("🔌 Socket.IO Engine: New client connected:", socket.id);
+  console.log("   Transport:", socket.transport.name);
+  console.log("   Remote address:", socket.remoteAddress);
+  console.log("   Request URL:", socket.request.url);
+  console.log("   User-Agent:", socket.request.headers["user-agent"]);
+  console.log("   Connection type:", socket.request.headers.connection);
+  console.log("   Upgrade header:", socket.request.headers.upgrade);
+
+  // 🔥 CRITICAL: Log transport changes
+  socket.on("upgrade", () => {
+    console.log(`⬆️ Client ${socket.id} upgraded to:`, socket.transport.name);
+  });
+
+  socket.on("upgradeError", (error) => {
+    console.log(`❌ Upgrade error for ${socket.id}:`, error);
+  });
+
+  socket.on("close", (reason, details) => {
+    console.log(`🔌 Engine client rep ${socket.id} disconnected:`, reason);
+
+    console.log(details.message);
+
+    // some additional description, for example the status code of the HTTP response
+    console.log(details.description);
+
+    // some additional context, for example the XMLHttpRequest object
+    console.log(details.context);
+  });
+
+  socket.on("error", (error, detailes) => {
+    console.log(`❌ Engine ahaah client ${socket.id} error:`, error);
+    console.log(`❌ REASONING  :`, detailes);
+  });
+});
 // Store Socket.IO connections with user info
 const socketUsers = new Map();
 const userSockets = new Map();
