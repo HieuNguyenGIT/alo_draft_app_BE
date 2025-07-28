@@ -29,7 +29,7 @@ router.get("/users/search", auth, async (req, res) => {
   }
 });
 
-// FIXED: Get all conversations for current user with proper last message
+// Get all conversations for current user with proper last message
 router.get("/conversations", auth, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -72,7 +72,6 @@ router.get("/conversations", auth, async (req, res) => {
     console.log(
       `📋 Returning ${conversations.length} conversations for user ${userId}`
     );
-    console.log("🔍 Sample conversation:", conversations[0]);
 
     res.json(conversations);
   } catch (error) {
@@ -172,7 +171,7 @@ router.get("/conversations/:id/messages", auth, async (req, res) => {
   }
 });
 
-// FIXED: Send a message with better logging and conversation update
+// Send a message with Socket.IO broadcasting
 router.post("/conversations/:id/messages", auth, async (req, res) => {
   try {
     const conversationId = req.params.id;
@@ -209,13 +208,11 @@ router.post("/conversations/:id/messages", auth, async (req, res) => {
 
     console.log(`✅ Message inserted with ID: ${result.insertId}`);
 
-    // CRITICAL: Update conversation last activity timestamp
+    // Update conversation last activity timestamp
     await db.query(
       `UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [conversationId]
     );
-
-    console.log(`🔄 Updated conversation ${conversationId} timestamp`);
 
     // Get the created message with sender info
     const [newMessage] = await db.query(
@@ -235,34 +232,23 @@ router.post("/conversations/:id/messages", auth, async (req, res) => {
     );
 
     const messageData = newMessage[0];
-    const wss = req.app.get("wss");
 
-    console.log(`📨 Broadcasting message to conversation ${conversationId}`);
-    console.log(`💬 Message data:`, messageData);
-    console.log(`👥 Total connected clients:`, wss.clients.size);
+    // Get Socket.IO instance and broadcast to conversation room
+    const io = req.app.get("io");
 
-    let broadcastCount = 0;
-    wss.clients.forEach((client) => {
-      console.log(
-        `🔍 Checking client - readyState: ${client.readyState}, conversationId: ${client.conversationId}, userId: ${client.userId}`
-      );
+    if (io) {
+      console.log(`📨 Broadcasting message to conversation ${conversationId}`);
 
-      if (client.readyState === 1) {
-        console.log(`✅ Broadcasting to client (userId: ${client.userId})`);
-        client.send(
-          JSON.stringify({
-            type: "new_message",
-            data: {
-              ...messageData,
-              conversation_id: parseInt(conversationId),
-            },
-          })
-        );
-        broadcastCount++;
-      }
-    });
+      // Broadcast to all users in the conversation room
+      io.to(`conversation_${conversationId}`).emit("newMessage", {
+        ...messageData,
+        conversation_id: parseInt(conversationId),
+      });
 
-    console.log(`📡 Broadcasted message to ${broadcastCount} clients`);
+      console.log(`📡 Message broadcasted via Socket.IO`);
+    } else {
+      console.log(`⚠️ Socket.IO instance not available for broadcasting`);
+    }
 
     res.status(201).json(messageData);
   } catch (error) {

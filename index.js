@@ -1,8 +1,9 @@
+// Updated index.js with enhanced Socket.IO configuration
+
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const WebSocket = require("ws");
 const http = require("http");
 const os = require("os");
 const jwt = require("jsonwebtoken");
@@ -15,331 +16,237 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-// ========== DEBUG MIDDLEWARE ==========
-app.use((req, res, next) => {
-  console.log(`📍 ${new Date().toISOString()} - ${req.method} ${req.url}`);
-  next();
-});
+// Enhanced CORS middleware
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
 
-// Middleware
-app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // Database connection
 const db = require("./config/database");
 
-// Basic route
-app.get("/", (req, res) => {
-  res.json({ message: "Welcome to the Todo API with Socket.IO + WebSocket" });
-});
-
-// Test endpoint to verify Socket.IO is running
-app.get("/socket-test", (req, res) => {
-  res.json({
-    message: "Socket.IO server is running",
-    connectedClients: io ? io.engine.clientsCount : 0,
-    transport: "websocket",
-    timestamp: new Date().toISOString(),
-  });
-});
-
 // Routes
 app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/todos", require("./routes/todo.routes"));
 app.use("/api/messages", require("./routes/message.routes"));
 
-// ========== SOCKET.IO DEBUG MIDDLEWARE ==========
-app.use("/socket.io/", (req, res, next) => {
-  console.log("🔍 Socket.IO request intercepted:");
-  console.log("   Method:", req.method);
-  console.log("   URL:", req.url);
-  console.log("   Headers:", Object.keys(req.headers));
-  console.log("   User-Agent:", req.headers["user-agent"]);
-  console.log("   Origin:", req.headers.origin);
-  next();
+// Basic route
+app.get("/", (req, res) => {
+  res.json({ message: "Welcome to the Todo API with Socket.IO" });
 });
 
-// Log all requests to see if Flutter is even reaching the server
-app.use((req, res, next) => {
-  if (req.url.includes("socket.io")) {
-    console.log(`🌐 Socket.IO related request: ${req.method} ${req.url}`);
-    console.log("   Query params:", req.query);
-    console.log("   Transport:", req.query.transport);
-  }
-  next();
+// Health check route
+app.get("/health", (req, res) => {
+  res.json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    socketio: "Ready",
+    environment: process.env.NODE_ENV || "development",
+  });
 });
 
-// ========== SOCKET.IO SETUP (FLUTTER MOBILE COMPATIBLE) ==========
+// ========== ENHANCED SOCKET.IO SETUP ==========
 const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
+    allowedHeaders: ["authorization"],
+    credentials: true,
   },
-
-  // 🔥 CRITICAL: Support both transports but prioritize WebSocket
-  transports: ["websocket", "polling"], // ✅ WebSocket first for Flutter
-
-  allowEIO3: false,
-
-  // 🔥 MOBILE-OPTIMIZED: Aggressive timeouts for mobile networks
-  pingTimeout: 120000, // 2 minutes - longer for mobile
-  pingInterval: 25000, // 25 seconds
-  upgradeTimeout: 45000, // 45 seconds for mobile upgrade
+  // 🔥 CRITICAL: Support websocket for mobile
+  transports: ["websocket"],
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  upgradeTimeout: 30000,
   maxHttpBufferSize: 1e6,
-  connectTimeout: 60000, // 1 minute connection timeout
-
-  // 🔥 FLUTTER COMPATIBILITY: Critical options
-  serveClient: false,
-  destroyUpgrade: false,
-  destroyUpgradeTimeout: 1000,
+  // 🔥 NEW: Additional mobile compatibility settings
   allowUpgrades: true,
-  perMessageDeflate: false, // Disable compression for mobile
-
-  // 🔥 NEW: Additional WebSocket-specific options
-  httpCompression: false, // Disable HTTP compression
-  allowRequest: (req, callback) => {
-    // Log all connection attempts for debugging
-    console.log("🔍 Connection attempt from:", req.headers["user-agent"]);
-    console.log("   Origin:", req.headers.origin);
-    console.log("   Host:", req.headers.host);
-    console.log("   Connection:", req.headers.connection);
-    console.log("   Upgrade:", req.headers.upgrade);
-
-    // Allow all connections for now
-    callback(null, true);
-  },
+  perMessageDeflate: false,
 });
 
-// 🔥 ENHANCED: WebSocket-specific debugging
-io.engine.on("connection", (socket) => {
-  console.log("🔌 Socket.IO Engine: New client connected:", socket.id);
-  console.log("   Transport:", socket.transport.name);
-  console.log("   Remote address:", socket.remoteAddress);
-  console.log("   Request URL:", socket.request.url);
-  console.log("   User-Agent:", socket.request.headers["user-agent"]);
-  console.log("   Connection type:", socket.request.headers.connection);
-  console.log("   Upgrade header:", socket.request.headers.upgrade);
-
-  // 🔥 CRITICAL: Log transport changes
-  socket.on("upgrade", () => {
-    console.log(`⬆️ Client ${socket.id} upgraded to:`, socket.transport.name);
-  });
-
-  socket.on("upgradeError", (error) => {
-    console.log(`❌ Upgrade error for ${socket.id}:`, error);
-  });
-
-  socket.on("close", (reason, details) => {
-    console.log(`🔌 Engine client rep ${socket.id} disconnected:`, reason);
-
-    console.log(details.message);
-
-    // some additional description, for example the status code of the HTTP response
-    console.log(details.description);
-
-    // some additional context, for example the XMLHttpRequest object
-    console.log(details.context);
-  });
-
-  socket.on("error", (error, detailes) => {
-    console.log(`❌ Engine ahaah client ${socket.id} error:`, error);
-    console.log(`❌ REASONING  :`, detailes);
-  });
-});
 // Store Socket.IO connections with user info
-const socketUsers = new Map();
-const userSockets = new Map();
+const socketUsers = new Map(); // socketId -> userInfo
+const userSockets = new Map(); // userId -> socketId
+const conversationRooms = new Map(); // conversationId -> Set of socketIds
 
-// ========== ENHANCED DEBUGGING ==========
-io.engine.on("connection_error", (err) => {
-  console.log("❌ Socket.IO Engine Connection Error:");
-  console.log("   Request URL:", err.req ? err.req.url : "Unknown");
-  console.log("   Request Headers:", err.req ? err.req.headers : "Unknown");
-  console.log("   Error Code:", err.code);
-  console.log("   Error Message:", err.message);
-  console.log("   Error Context:", err.context);
-});
-
-// Log engine connections with more detail
-io.engine.on("connection", (socket) => {
-  console.log("🔌 Socket.IO Engine: New client connected:", socket.id);
-  console.log("   Transport:", socket.transport.name);
-  console.log("   Remote address:", socket.remoteAddress);
-  console.log("   Request URL:", socket.request.url);
-  console.log("   User-Agent:", socket.request.headers["user-agent"]);
-
-  // 🔥 NEW: Log when client disconnects from engine
-  socket.on("close", (reason) => {
-    console.log(`🔌 Engine client ${socket.id} disconnected:`, reason);
-  });
-
-  socket.on("error", (error) => {
-    console.log(`❌ Engine client ${socket.id} error:`, error);
-  });
-});
-
-// 🔥 CRITICAL: Enhanced authentication middleware with detailed logging
+// 🔥 ENHANCED: Socket.IO authentication middleware
 io.use(async (socket, next) => {
-  console.log("🔐 Socket.IO Auth Middleware Called for:", socket.id);
-  console.log("   Handshake query:", socket.handshake.query);
-  console.log("   Handshake auth:", socket.handshake.auth);
-  console.log(
-    "   Handshake headers:",
-    Object.keys(socket.handshake.headers || {})
-  );
-
   try {
-    // 🔥 NEW: Check multiple sources for token
+    console.log("🔐 Socket.IO: Authentication attempt");
+    console.log("🔍 Connection info:", {
+      id: socket.id,
+      transport: socket.conn.transport.name,
+      upgraded: socket.conn.upgraded,
+      remoteAddress: socket.conn.remoteAddress,
+    });
+
     const token =
       socket.handshake.auth.token ||
-      socket.handshake.query.token ||
-      socket.handshake.headers.authorization;
-
-    console.log(
-      "🔑 Token received:",
-      token ? `YES (${token.substring(0, 20)}...)` : "NO"
-    );
+      socket.handshake.headers.authorization?.replace("Bearer ", "");
 
     if (!token) {
-      console.log("❌ Socket.IO: No token provided in auth, query, or headers");
+      console.log("❌ Socket.IO: No token provided");
       return next(new Error("Authentication error: No token provided"));
     }
 
-    console.log("🔍 Verifying JWT token...");
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log("✅ JWT verified for user ID:", decoded.id);
+    console.log("🔍 Token received:", token.substring(0, 20) + "...");
 
-    console.log("🔍 Querying database for user...");
+    // Verify JWT token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log("✅ Token decoded:", decoded);
+
     const [users] = await db.query(
       "SELECT id, name, email FROM users WHERE id = ?",
       [decoded.id]
     );
 
     if (users.length === 0) {
-      console.log("❌ Socket.IO: User not found in database");
+      console.log("❌ Socket.IO: User not found for ID:", decoded.id);
       return next(new Error("Authentication error: User not found"));
     }
 
+    // Attach user info to socket
     socket.userId = users[0].id;
     socket.userInfo = users[0];
 
     console.log(
-      `✅ Socket.IO: User ${users[0].name} (ID: ${users[0].id}) authenticated successfully`
+      `✅ Socket.IO: User ${users[0].name} (ID: ${users[0].id}) authenticated`
     );
-    console.log("🎯 Authentication middleware completed successfully");
     next();
   } catch (error) {
     console.log("❌ Socket.IO authentication error:", error.message);
-    console.log("   Error type:", error.name);
-    console.log("   Error stack:", error.stack);
-    next(new Error(`Authentication error: ${error.message}`));
+    return next(new Error(`Authentication error: ${error.message}`));
   }
 });
 
-// ========== TEST NAMESPACE (NO AUTH REQUIRED) ==========
-const testNamespace = io.of("/test");
-
-testNamespace.on("connection", (socket) => {
-  console.log(`🧪 TEST namespace: Client connected (${socket.id})`);
-  console.log(`   Transport: ${socket.conn.transport.name}`);
-
-  // Send immediate confirmation
-  socket.emit("connected", {
-    message: "Test connection successful!",
-    socketId: socket.id,
-    transport: socket.conn.transport.name,
-    namespace: "/test",
-    timestamp: new Date().toISOString(),
-  });
-
-  // Handle test messages
-  socket.on("test", (data) => {
-    console.log("🧪 TEST namespace: Test message received:", data);
-    socket.emit("testResponse", {
-      message: "Test received in test namespace!",
-      originalData: data,
-      socketId: socket.id,
-      transport: socket.conn.transport.name,
-      timestamp: new Date().toISOString(),
-    });
-  });
-
-  socket.on("disconnect", (reason) => {
-    console.log(`🧪 TEST namespace: Client disconnected (${reason})`);
-  });
-
-  socket.on("error", (error) => {
-    console.log("🧪 TEST namespace error:", error);
-  });
-});
-
-console.log("🧪 Test namespace created at /test (no auth required)");
-
-// ========== MAIN NAMESPACE (REQUIRES AUTH) ==========
+// 🔥 ENHANCED: Socket.IO connection handling
 io.on("connection", (socket) => {
-  console.log("🎉 Socket.IO MAIN: Authentication successful!");
-  console.log(`   User: ${socket.userInfo.name} (ID: ${socket.userId})`);
-  console.log(`   Socket ID: ${socket.id}`);
+  console.log(
+    `🔌 Socket.IO: User ${socket.userInfo.name} connected (${socket.id})`
+  );
   console.log(`   Transport: ${socket.conn.transport.name}`);
+  console.log(`   Upgraded: ${socket.conn.upgraded}`);
 
+  // Store user connection
   socketUsers.set(socket.id, socket.userInfo);
   userSockets.set(socket.userId, socket.id);
 
-  // 🔥 IMPORTANT: Send authentication confirmation immediately
+  // 🔥 CRITICAL: Send authentication confirmation
   socket.emit("authenticated", {
     user: socket.userInfo,
     socketId: socket.id,
-    transport: socket.conn.transport.name,
-    namespace: "/",
     timestamp: new Date().toISOString(),
-    message: "Successfully authenticated to main namespace",
+    transport: socket.conn.transport.name,
   });
 
-  console.log(`✅ Authentication confirmation sent to ${socket.userInfo.name}`);
+  console.log(`📡 Authentication confirmation sent to ${socket.userInfo.name}`);
 
-  // Handle test messages in authenticated mode
+  // 🔥 ENHANCED: Handle test messages
   socket.on("test", (data) => {
-    console.log("🧪 Socket.IO authenticated test message:", data);
+    console.log("🧪 Socket.IO test message (no auth):", data);
     socket.emit("testResponse", {
-      message: "Authenticated test received!",
+      message: "Test received!",
       originalData: data,
-      user: socket.userInfo.name,
-      socketId: socket.id,
       timestamp: new Date().toISOString(),
     });
   });
 
   socket.on("testMessage", (data) => {
-    console.log("🧪 Socket.IO testMessage (auth mode):", data);
+    console.log("🧪 Socket.IO test message (authenticated):", data);
     socket.emit("testResponse", {
-      message: "Authenticated testMessage received!",
+      message: "Authenticated test received!",
       originalData: data,
-      user: socket.userInfo.name,
-      socketId: socket.id,
       timestamp: new Date().toISOString(),
+      user: socket.userInfo.name,
     });
   });
 
-  // Handle conversation joining
-  socket.on("joinConversation", (conversationId) => {
-    socket.conversationId = conversationId;
-    socket.join(`conversation_${conversationId}`);
-    console.log(
-      `🏠 User ${socket.userId} joined conversation ${conversationId}`
-    );
+  // 🔥 ENHANCED: Conversation management
+  socket.on("joinConversation", async (conversationId) => {
+    try {
+      // Validate conversation access
+      const [conversation] = await db.query(
+        `SELECT id FROM conversations 
+         WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)`,
+        [conversationId, socket.userId, socket.userId]
+      );
 
-    socket.emit("joinedConversation", {
-      conversationId: conversationId,
-      message: "Successfully joined conversation",
-      timestamp: new Date().toISOString(),
-    });
+      if (conversation.length === 0) {
+        socket.emit("error", { message: "Access denied to conversation" });
+        return;
+      }
+
+      // Leave previous conversation if any
+      if (socket.conversationId) {
+        socket.leave(`conversation_${socket.conversationId}`);
+        const oldRoom = conversationRooms.get(socket.conversationId);
+        if (oldRoom) {
+          oldRoom.delete(socket.id);
+          if (oldRoom.size === 0) {
+            conversationRooms.delete(socket.conversationId);
+          }
+        }
+        console.log(
+          `🚪 User ${socket.userId} left conversation ${socket.conversationId}`
+        );
+      }
+
+      // Join new conversation
+      socket.conversationId = conversationId;
+      socket.join(`conversation_${conversationId}`);
+
+      // Track conversation room
+      if (!conversationRooms.has(conversationId)) {
+        conversationRooms.set(conversationId, new Set());
+      }
+      conversationRooms.get(conversationId).add(socket.id);
+
+      console.log(
+        `🏠 User ${socket.userId} joined conversation ${conversationId}`
+      );
+
+      socket.emit("joinedConversation", {
+        conversationId: conversationId,
+        message: "Successfully joined conversation",
+        timestamp: new Date().toISOString(),
+        participantCount: conversationRooms.get(conversationId).size,
+      });
+
+      // Mark messages as read when joining
+      try {
+        await db.query(
+          `UPDATE messages SET is_read = TRUE 
+           WHERE conversation_id = ? AND sender_id != ? AND is_read = FALSE`,
+          [conversationId, socket.userId]
+        );
+      } catch (error) {
+        console.log("❌ Error marking messages as read:", error);
+      }
+    } catch (error) {
+      console.log("❌ Error joining conversation:", error);
+      socket.emit("error", { message: "Failed to join conversation" });
+    }
   });
 
   // Handle leaving conversation
   socket.on("leaveConversation", () => {
     if (socket.conversationId) {
       socket.leave(`conversation_${socket.conversationId}`);
+      const room = conversationRooms.get(socket.conversationId);
+      if (room) {
+        room.delete(socket.id);
+        if (room.size === 0) {
+          conversationRooms.delete(socket.conversationId);
+        }
+      }
       console.log(
         `🚪 User ${socket.userId} left conversation ${socket.conversationId}`
       );
@@ -347,7 +254,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle message sending
+  // 🔥 ENHANCED: Message sending with database integration
   socket.on("sendMessage", async (data) => {
     try {
       const {
@@ -358,33 +265,87 @@ io.on("connection", (socket) => {
       } = data;
 
       console.log(
-        `📤 Socket.IO: User ${socket.userId} sending message to conversation ${conversationId}`
+        `📤 Socket.IO: User ${socket.userId} sending message to conversation ${conversationId}: "${content}"`
       );
 
-      socket.to(`conversation_${conversationId}`).emit("newMessage", {
-        id: Date.now(),
-        conversationId: conversationId,
-        senderId: socket.userId,
-        senderName: socket.userInfo.name,
-        content: content,
-        messageType: messageType,
-        createdAt: new Date().toISOString(),
-        temporaryId: temporaryId,
-      });
+      // Validate conversation access
+      const [conversation] = await db.query(
+        `SELECT id FROM conversations 
+         WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)`,
+        [conversationId, socket.userId, socket.userId]
+      );
 
+      if (conversation.length === 0) {
+        socket.emit("error", { message: "Access denied to conversation" });
+        return;
+      }
+
+      // Insert message into database
+      const [result] = await db.query(
+        `INSERT INTO messages (conversation_id, sender_id, content, message_type) 
+         VALUES (?, ?, ?, ?)`,
+        [conversationId, socket.userId, content.trim(), messageType]
+      );
+
+      // Update conversation timestamp
+      await db.query(
+        `UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [conversationId]
+      );
+
+      // Get the created message with sender info
+      const [newMessage] = await db.query(
+        `SELECT 
+          m.id,
+          m.content,
+          m.message_type,
+          m.sender_id,
+          m.is_read,
+          m.created_at,
+          m.conversation_id,
+          u.name as sender_name
+         FROM messages m
+         JOIN users u ON m.sender_id = u.id
+         WHERE m.id = ?`,
+        [result.insertId]
+      );
+
+      const messageData = {
+        ...newMessage[0],
+        conversation_id: parseInt(conversationId),
+        created_at: newMessage[0].created_at.toISOString(),
+        temporaryId: temporaryId,
+      };
+
+      // 🔥 CRITICAL: Broadcast to conversation room
+      io.to(`conversation_${conversationId}`).emit("newMessage", messageData);
+      console.log(`📡 Message broadcasted to conversation_${conversationId}`);
+
+      // Send confirmation to sender
       socket.emit("messageStatus", {
         temporaryId: temporaryId,
+        messageId: result.insertId,
         status: "sent",
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
       console.log("❌ Socket.IO message error:", error);
-      socket.emit("error", { message: "Failed to send message" });
+      socket.emit("error", {
+        message: "Failed to send message",
+        error: error.message,
+      });
     }
   });
 
-  // Handle typing indicators
+  // 🔥 ENHANCED: Typing indicators with room validation
   socket.on("startTyping", (conversationId) => {
+    if (!socket.conversationId || socket.conversationId !== conversationId) {
+      return; // Ignore if not in the conversation
+    }
+
+    console.log(
+      `⌨️ User ${socket.userId} started typing in conversation ${conversationId}`
+    );
     socket.to(`conversation_${conversationId}`).emit("userTyping", {
       userId: socket.userId,
       userName: socket.userInfo.name,
@@ -393,155 +354,83 @@ io.on("connection", (socket) => {
   });
 
   socket.on("stopTyping", (conversationId) => {
+    if (!socket.conversationId || socket.conversationId !== conversationId) {
+      return; // Ignore if not in the conversation
+    }
+
+    console.log(
+      `⌨️ User ${socket.userId} stopped typing in conversation ${conversationId}`
+    );
     socket.to(`conversation_${conversationId}`).emit("userStoppedTyping", {
       userId: socket.userId,
       conversationId: conversationId,
     });
   });
 
+  // Handle ping/pong for debugging
+  socket.on("ping", (data) => {
+    console.log(`🏓 Ping from ${socket.userInfo.name}:`, data);
+    socket.emit("pong", {
+      message: "pong",
+      timestamp: new Date().toISOString(),
+      originalData: data,
+      transport: socket.conn.transport.name,
+    });
+  });
+
+  // 🔥 ENHANCED: Handle disconnection with cleanup
   socket.on("disconnect", (reason) => {
     console.log(
-      `🔌 Socket.IO MAIN: User ${socket.userInfo.name} disconnected (${reason})`
+      `🔌 Socket.IO: User ${socket.userInfo.name} disconnected (${reason})`
     );
-    socketUsers.delete(socket.id);
-    userSockets.delete(socket.userId);
-  });
 
-  socket.on("error", (error) => {
-    console.log("❌ Socket.IO MAIN error:", error);
-  });
-});
-
-// ========== WEBSOCKET SETUP (UNCHANGED) ==========
-const wss = new WebSocket.Server({
-  server,
-  path: "/ws",
-});
-
-const connectedUsers = new Map();
-
-wss.on("connection", (ws, req) => {
-  console.log("🌐 WebSocket: Client attempting to connect");
-
-  ws.on("message", async (message) => {
-    try {
-      const data = JSON.parse(message);
-
-      if (data.type === "authenticate") {
-        const token = data.token;
-        if (!token) {
-          ws.send(
-            JSON.stringify({ type: "error", message: "No token provided" })
-          );
-          ws.close();
-          return;
-        }
-
-        try {
-          const decoded = jwt.verify(token, process.env.JWT_SECRET);
-          const [users] = await db.query(
-            "SELECT id, name, email FROM users WHERE id = ?",
-            [decoded.id]
-          );
-
-          if (users.length === 0) {
-            ws.send(
-              JSON.stringify({ type: "error", message: "User not found" })
-            );
-            ws.close();
-            return;
-          }
-
-          ws.userId = users[0].id;
-          ws.userInfo = users[0];
-          connectedUsers.set(users[0].id, ws);
-
-          ws.send(
-            JSON.stringify({
-              type: "authenticated",
-              user: users[0],
-            })
-          );
-
-          console.log(`🌐 WebSocket: User ${users[0].name} connected`);
-        } catch (error) {
-          ws.send(JSON.stringify({ type: "error", message: "Invalid token" }));
-          ws.close();
-        }
-      } else if (data.type === "join_conversation") {
-        if (ws.userId) {
-          ws.conversationId = data.conversationId;
-          console.log(
-            `🌐 WebSocket: User ${ws.userId} joined conversation ${data.conversationId}`
-          );
-        }
-      } else if (data.type === "leave_conversation") {
-        if (ws.userId) {
-          console.log(
-            `🌐 WebSocket: User ${ws.userId} left conversation ${ws.conversationId}`
-          );
-          ws.conversationId = null;
-        }
-      } else if (data.type === "typing_start") {
-        if (ws.userId && ws.conversationId) {
-          wss.clients.forEach((client) => {
-            if (
-              client.readyState === 1 &&
-              client.conversationId === ws.conversationId &&
-              client.userId !== ws.userId
-            ) {
-              client.send(
-                JSON.stringify({
-                  type: "user_typing",
-                  userId: ws.userId,
-                  userName: ws.userInfo.name,
-                  conversationId: ws.conversationId,
-                })
-              );
-            }
-          });
-        }
-      } else if (data.type === "typing_stop") {
-        if (ws.userId && ws.conversationId) {
-          wss.clients.forEach((client) => {
-            if (
-              client.readyState === 1 &&
-              client.conversationId === ws.conversationId &&
-              client.userId !== ws.userId
-            ) {
-              client.send(
-                JSON.stringify({
-                  type: "user_stopped_typing",
-                  userId: ws.userId,
-                  conversationId: ws.conversationId,
-                })
-              );
-            }
-          });
+    // Clean up conversation room
+    if (socket.conversationId) {
+      const room = conversationRooms.get(socket.conversationId);
+      if (room) {
+        room.delete(socket.id);
+        if (room.size === 0) {
+          conversationRooms.delete(socket.conversationId);
         }
       }
-    } catch (error) {
-      console.error("🌐 WebSocket message error:", error);
-      ws.send(
-        JSON.stringify({ type: "error", message: "Invalid message format" })
-      );
     }
+
+    // Clean up stored connections
+    socketUsers.delete(socket.id);
+    userSockets.delete(socket.userId);
+
+    console.log(`   Remaining connections: ${socketUsers.size}`);
   });
 
-  ws.on("close", () => {
-    if (ws.userId) {
-      connectedUsers.delete(ws.userId);
-      console.log(`🌐 WebSocket: User ${ws.userId} disconnected`);
-    }
+  // Handle errors
+  socket.on("error", (error) => {
+    console.log("❌ Socket.IO socket error:", error);
   });
 
-  ws.on("error", (error) => {
-    console.error("🌐 WebSocket error:", error);
+  // Handle connection errors
+  socket.on("connect_error", (error) => {
+    console.log("❌ Socket.IO connection error:", error);
+  });
+
+  // 🔥 NEW: Transport upgrade handling
+  socket.conn.on("upgrade", () => {
+    console.log(`⬆️ User ${socket.userInfo.name} upgraded to WebSocket`);
+  });
+
+  socket.conn.on("upgradeError", (error) => {
+    console.log(`❌ Upgrade error for ${socket.userInfo.name}:`, error);
   });
 });
 
-// Make both WebSocket and Socket.IO available to routes
-app.set("wss", wss);
+// 🔥 NEW: Periodic cleanup and monitoring
+setInterval(() => {
+  console.log(`📊 Socket.IO Stats:`);
+  console.log(`   Connected users: ${socketUsers.size}`);
+  console.log(`   Active conversations: ${conversationRooms.size}`);
+  console.log(`   Total sockets: ${io.engine.clientsCount}`);
+}, 60000); // Every minute
+
+// Make Socket.IO available to routes
 app.set("io", io);
 
 // Enhanced network detection for Docker
@@ -585,23 +474,19 @@ const PORT = process.env.PORT || 3003;
 server.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log("📦 Database connection is a success");
-  console.log("🔌 WebSocket server is ready at ws://192.168.100.87:3003/ws");
-  console.log(
-    "⚡ Socket.IO server is ready at http://192.168.100.87:3003 (WebSocket only)"
-  );
-  console.log("🧪 Socket.IO test namespace: http://192.168.100.87:3003/test");
+  console.log("⚡ Socket.IO server is ready for real-time communication");
+  console.log("🔧 Environment:", process.env.NODE_ENV || "development");
+  console.log("🔑 JWT Secret:", process.env.JWT_SECRET ? "Set" : "Missing");
+  console.log("🔌 Socket.IO Transports: websocket");
   console.log("HOT RELOAD TEST: " + new Date().toISOString());
 
   const { containerIP, hostGatewayIP, isDocker } = getDockerNetworkInfo();
 
-  console.log("\n" + "=".repeat(80));
+  console.log("\n" + "=".repeat(70));
   console.log("📱 FOR FLUTTER SOCKET.IO CONNECTION:");
-  console.log(
-    `   🟦 Main namespace: http://192.168.100.87:${PORT} (requires auth)`
-  );
-  console.log(
-    `   🧪 Test namespace: http://192.168.100.87:${PORT}/test (no auth)`
-  );
-  console.log(`   🟩 WebSocket: ws://192.168.100.87:${PORT}/ws`);
-  console.log("=".repeat(80) + "\n");
+  console.log(`   ✅ Socket.IO URL: http://192.168.100.87:${PORT}`);
+  console.log(`   ✅ Health Check: http://192.168.100.87:${PORT}/health`);
+  console.log(`   ✅ API Base: http://192.168.100.87:${PORT}/api`);
+  console.log("   🔥 Mobile Optimized: websocket transports");
+  console.log("=".repeat(70) + "\n");
 });
